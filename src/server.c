@@ -25,7 +25,6 @@
 
 void  setup_socket(int *sockfd);
 void *handle_client(void *arg);
-// void  build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size);
 void build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size, int client_fd);
 
 int main(void)
