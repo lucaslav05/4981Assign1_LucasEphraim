@@ -1,7 +1,8 @@
 //
-// Created by lucas-laviolette on 1/9/25.
+// Created by lucas-laviolette on 1/9/25. and edited by Ephraim on 1/24/25
 //
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -17,10 +18,14 @@
 #define PATH_SIZE 256
 #define PROTOCOL_SIZE 16
 #define HEADER_SIZE 512
+#define MEDIA_FOLDER "../media/"
+#ifndef SOCK_CLOEXEC
+    #define SOCK_CLOEXEC 0x02000000  // Define SOCK_CLOEXEC if not already defined
+#endif
 
 void  setup_socket(int *sockfd);
 void *handle_client(void *arg);
-void  build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size);
+void build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size, int client_fd);
 
 int main(void)
 {
@@ -50,9 +55,9 @@ void setup_socket(int *sockfd)
 {
     struct sockaddr_in server_addr;
 
-    *sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if(*sockfd < 0)
-    {
+    *sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+
+    if (*sockfd < 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
@@ -130,7 +135,7 @@ void *handle_client(void *arg)
         file_ext = "";
     }
 
-    build_http_response(file_name, file_ext, response, &response_size);
+    build_http_response(file_name, file_ext, response, &response_size, client_fd);
 
     if(strcmp(method, "HEAD") == 0)
     {
@@ -150,14 +155,14 @@ void *handle_client(void *arg)
     return NULL;
 }
 
-void build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size)
+void build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size, int client_fd)
 {
-    ssize_t     bytes_read;
-    char        header[HEADER_SIZE];
-    off_t       file_size;
-    struct stat file_stat;
+    ssize_t     file_size;
     int         file_fd;
-    const char *mime_type = "application/octet-stream";
+    ssize_t     bytes_read;
+    char        full_path[PATH_SIZE];
+
+    // Determine MIME type based on file extension
     if(strcmp(file_ext, "html") == 0)
     {
         mime_type = "text/html";
@@ -174,44 +179,74 @@ void build_http_response(const char *file_name, const char *file_ext, char *resp
     {
         mime_type = "image/jpeg";
     }
+    else if(strcmp(file_ext, "css") == 0)
+    {
+        mime_type = "text/css";
+    }
+    else if(strcmp(file_ext, "gif") == 0)
+    {
+        mime_type = "image/gif";
+    }
+    else if(strcmp(file_ext, "js") == 0)
+    {
+        mime_type = "application/javascript";
+    }
 
-    // if not exist 404
-    file_fd = open(file_name, O_RDONLY | O_CLOEXEC);
+    snprintf(full_path, sizeof(full_path), "%s%s", MEDIA_FOLDER, file_name);
+
+    // Open the requested file
+    file_fd = open(full_path, O_RDONLY | O_CLOEXEC);
+
     if(file_fd == -1)
     {
         snprintf(response,
-                 BUFFER_SIZE,
-                 "HTTP/1.1 404 Not Found\r\n"
+                 HEADER_SIZE,
+                 "HTTP/1.0 404 Not Found\r\n"
                  "Content-Type: text/plain\r\n"
+                 "Connection: close\r\n"
                  "\r\n"
                  "404 Not Found");
         *response_size = (ssize_t)strlen(response);
+        send(client_fd, response, (size_t)(*response_size), 0);
         return;
     }
 
-    // get file size for Content-Length
-    fstat(file_fd, &file_stat);
-    file_size = file_stat.st_size;
+    // Get file size
+    if(fstat(file_fd, &file_stat) == -1)
+    {
+        snprintf(response,
+                 HEADER_SIZE,
+                 "HTTP/1.0 500 Internal Server Error\r\n"
+                 "Content-Type: text/plain\r\n"
+                 "Connection: close\r\n"
+                 "\r\n"
+                 "500 Internal Server Error");
+        *response_size = (ssize_t)strlen(response);
+        send(client_fd, response, (size_t)(*response_size), 0);
+        close(file_fd);
+        return;
+    }
 
-    // Build http header
-    snprintf(header,
-             sizeof(header),
-             "HTTP/1.1 200 OK\r\n"
+    file_size = (ssize_t)file_stat.st_size;
+
+    // Build and send the HTTP header (with HTTP/1.0)
+    snprintf(response,
+             HEADER_SIZE,
+             "HTTP/1.0 200 OK\r\n"
              "Content-Type: %s\r\n"
              "Content-Length: %ld\r\n"
+             "Connection: close\r\n"
              "\r\n",
              mime_type,
-             file_size);
+             (long)file_size);
+    *response_size = (ssize_t)strlen(response);
+    send(client_fd, response, (size_t)(*response_size), 0);
 
-    // copy header to response buffer
-    *response_size = 0;
-    memcpy(response, header, strlen(header));
-    *response_size = (ssize_t)strlen(header);
-
-    // copy file to response buffer
-    while((bytes_read = read(file_fd, response + *response_size, (size_t)(BUFFER_SIZE - *response_size))) > 0)
+    // Stream the file contents in chunks
+    while((bytes_read = read(file_fd, buffer, BUFFER_SIZE)) > 0)
     {
-        *response_size += bytes_read;
+        send(client_fd, buffer, (size_t)bytes_read, 0);
     }
+
     close(file_fd);
 }
