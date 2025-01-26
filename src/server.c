@@ -25,6 +25,7 @@
 
 void  setup_socket(int *sockfd);
 void *handle_client(void *arg);
+// void  build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size);
 void build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size, int client_fd);
 
 int main(void)
@@ -56,7 +57,7 @@ void setup_socket(int *sockfd)
     struct sockaddr_in server_addr;
 
     *sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-
+    
     if (*sockfd < 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
@@ -158,7 +159,10 @@ void *handle_client(void *arg)
 void build_http_response(const char *file_name, const char *file_ext, char *response, ssize_t *response_size, int client_fd)
 {
     ssize_t     file_size;
+    struct stat file_stat;
     int         file_fd;
+    const char *mime_type = "application/octet-stream";
+    char        buffer[BUFFER_SIZE];
     ssize_t     bytes_read;
     char        full_path[PATH_SIZE];
 
@@ -196,7 +200,7 @@ void build_http_response(const char *file_name, const char *file_ext, char *resp
 
     // Open the requested file
     file_fd = open(full_path, O_RDONLY | O_CLOEXEC);
-
+    
     if(file_fd == -1)
     {
         snprintf(response,
